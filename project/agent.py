@@ -36,13 +36,14 @@ class Agent:
             or "https://openai.vocareum.com/v1"
         )
 
-        self.llm = ChatOpenAI(
+        base_llm = ChatOpenAI(
             model=model,
             temperature=0.0,
             base_url=base_url,
             api_key=api_key,
         )
 
+        self.llm = base_llm.bind_tools(TOOL_KIT)
         self.tool_node = ToolNode(TOOL_KIT)
         self.graph = self._build_graph()
 
