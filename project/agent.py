@@ -76,7 +76,7 @@ class Agent:
 
         return graph.compile()
 
-    def invoke(self, question: str, context: Optional[str] = None) -> str:
+    def invoke(self, question: str, context: Optional[str] = None) -> dict:
         """Ask the agent a question with optional additional context."""
         messages: List = [SystemMessage(content=self.instructions)]
         if context:
@@ -85,7 +85,10 @@ class Agent:
 
         result = self.graph.invoke({"messages": messages})
         final_message = result["messages"][-1]
-        return getattr(final_message, "content", str(final_message))
+        return {
+            "messages": result["messages"],
+            "final_response": getattr(final_message, "content", str(final_message)),
+        }
 
     def get_agent_tools(self) -> List[str]:
         """Return the names of available tools."""
