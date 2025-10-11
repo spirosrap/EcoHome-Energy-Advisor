@@ -1,17 +1,20 @@
 """
 Tools for EcoHome Energy Advisor Agent
 """
+import hashlib
+import math
 import os
-import json
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Any
-from langchain_core.tools import tool
+from typing import Any, Dict
+
 from langchain_chroma import Chroma
+from langchain_core.tools import tool
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.document_loaders import TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+
 try:  # Support running as module or script
     from .models.energy import DatabaseManager  # type: ignore
 except ImportError:  # pragma: no cover
@@ -43,10 +46,25 @@ def _embedding_kwargs() -> Dict[str, str]:
         kwargs["openai_api_base"] = base_url
     return kwargs
 
+
+def _seeded_random(*keys: str) -> random.Random:
+    """Create a deterministic random generator from provided keys."""
+    seed_str = "|".join(keys).encode("utf-8")
+    digest = hashlib.sha256(seed_str).hexdigest()[:16]
+    seed = int(digest, 16) % (2**32)
+    return random.Random(seed)
+
+
+def _seasonal_temperature(base_date: datetime) -> float:
+    """Return a seasonal offset based on day of year."""
+    day_of_year = base_date.timetuple().tm_yday
+    # Simple sinusoidal model: peak in July (~day 200), trough in January (~day 20)
+    return 10 * math.sin((2 * math.pi * (day_of_year - 200)) / 365.25)
+
+
 # Initialize database manager
 db_manager = DatabaseManager()
 
-# TODO: Implement get_weather_forecast tool
 @tool
 def get_weather_forecast(location: str, days: int = 3) -> Dict[str, Any]:
     """
@@ -80,11 +98,125 @@ def get_weather_forecast(location: str, days: int = 3) -> Dict[str, Any]:
             ]
         }
     """
-    # Mock weather API or call OpenWeatherMap or similar
-    
-    return 
+    try:
+        days = int(days)
+    except (TypeError, ValueError):
+        return {"error": "Days must be an integer between 1 and 7."}
 
-# TODO: Implement get_electricity_prices tool
+    if days < 1 or days > 7:
+        days = max(1, min(days, 7))
+
+    location = location.strip() or "Unknown"
+    generated_at = datetime.now(timezone.utc)
+
+    baseline_rng = _seeded_random(location.lower())
+    location_temp_offset = baseline_rng.uniform(-4.0, 4.0)
+    location_humidity_bias = baseline_rng.uniform(-5.0, 5.0)
+    location_wind_bias = baseline_rng.uniform(-1.5, 1.5)
+
+    condition_multipliers = {
+        "sunny": {"probability": 0.38, "irradiance": 1.0, "humidity": -8},
+        "partly_cloudy": {"probability": 0.28, "irradiance": 0.7, "humidity": 0},
+        "cloudy": {"probability": 0.22, "irradiance": 0.45, "humidity": 6},
+        "rainy": {"probability": 0.12, "irradiance": 0.2, "humidity": 12},
+    }
+
+    hourly_forecast = []
+    daily_summaries = []
+
+    for day_index in range(days):
+        day_dt = generated_at + timedelta(days=day_index)
+        seasonal_offset = _seasonal_temperature(day_dt)
+        day_rng = _seeded_random(location.lower(), str(day_dt.date()))
+
+        base_temp = 18 + location_temp_offset + seasonal_offset + day_rng.uniform(-2.0, 2.0)
+        amplitude = 7.5 + day_rng.uniform(-1.0, 1.5)
+
+        # Adjust condition weights slightly per day
+        condition_labels = list(condition_multipliers.keys())
+        base_weights = []
+        for label in condition_labels:
+            base = condition_multipliers[label]["probability"]
+            tweak = day_rng.uniform(-0.05, 0.05)
+            if label == "sunny":
+                tweak += max(0, location_temp_offset) / 20
+            elif label in ("cloudy", "rainy"):
+                tweak += max(0, -location_temp_offset) / 25
+            base_weights.append(max(0.05, base + tweak))
+        total_weight = sum(base_weights)
+        weights = [w / total_weight for w in base_weights]
+        dominant_condition = day_rng.choices(condition_labels, weights=weights, k=1)[0]
+        condition_factor = condition_multipliers[dominant_condition]
+
+        day_high = -float("inf")
+        day_low = float("inf")
+        day_humidity_total = 0.0
+        day_wind_total = 0.0
+
+        for hour in range(24):
+            hour_dt = day_dt.replace(hour=hour, minute=0, second=0, microsecond=0)
+            diurnal = math.sin(math.pi * (hour - 6) / 12)
+            temp = base_temp + amplitude * diurnal + day_rng.uniform(-0.6, 0.6)
+            humidity = min(100, max(30, 55 + condition_factor["humidity"] + location_humidity_bias + day_rng.uniform(-8, 8)))
+            wind_speed = max(0, 8 + location_wind_bias + day_rng.uniform(-2.5, 2.5))
+            wind_speed = round(wind_speed, 1)
+
+            irradiance = 0.0
+            if 6 <= hour <= 18:
+                solar_curve = max(0.0, math.sin(math.pi * (hour - 6) / 12))
+                irradiance = round(850 * solar_curve * condition_factor["irradiance"], 1)
+
+            temp = round(temp, 1)
+            humidity = round(humidity, 1)
+
+            condition = dominant_condition
+            if day_rng.random() < 0.2:
+                condition = day_rng.choice(condition_labels)
+
+            hourly_entry = {
+                "timestamp": hour_dt.isoformat(),
+                "date": hour_dt.date().isoformat(),
+                "hour": hour,
+                "temperature_c": temp,
+                "condition": condition,
+                "humidity": humidity,
+                "wind_speed_kph": wind_speed,
+                "solar_irradiance_wm2": irradiance,
+            }
+            hourly_forecast.append(hourly_entry)
+
+            day_high = max(day_high, temp)
+            day_low = min(day_low, temp)
+            day_humidity_total += humidity
+            day_wind_total += wind_speed
+
+        daily_summaries.append({
+            "date": day_dt.date().isoformat(),
+            "condition": dominant_condition,
+            "temperature_high_c": round(day_high, 1),
+            "temperature_low_c": round(day_low, 1),
+            "average_humidity": round(day_humidity_total / 24, 1),
+            "average_wind_speed_kph": round(day_wind_total / 24, 1),
+            "sunrise_local": day_dt.replace(hour=6, minute=18, second=0, microsecond=0).isoformat(),
+            "sunset_local": day_dt.replace(hour=18, minute=42, second=0, microsecond=0).isoformat(),
+        })
+
+    current_hour = generated_at.astimezone(timezone.utc).hour
+    current_date = generated_at.date().isoformat()
+    current_data = next(
+        (entry for entry in hourly_forecast if entry["date"] == current_date and entry["hour"] == current_hour),
+        hourly_forecast[0],
+    )
+
+    return {
+        "location": location,
+        "forecast_generated_at": generated_at.isoformat(),
+        "forecast_days": days,
+        "current": current_data,
+        "daily": daily_summaries,
+        "hourly": hourly_forecast,
+    }
+
 @tool
 def get_electricity_prices(date: str = None) -> Dict[str, Any]:
     """
@@ -112,15 +244,78 @@ def get_electricity_prices(date: str = None) -> Dict[str, Any]:
         }
     """
     if date is None:
-        date = datetime.now().strftime("%Y-%m-%d")
+        target_date = datetime.now().date()
+    else:
+        try:
+            target_date = datetime.strptime(date, "%Y-%m-%d").date()
+        except ValueError:
+            return {"error": "Date must be in YYYY-MM-DD format."}
     
-    # Mock electricity pricing - in real implementation, this would call a pricing API
-    # Use a base price per kWh    
-    # Then generate hourly rates with peak/off-peak pricing
-    # Peak normally between 6 and 22...
-    # demand_charge should be 0 if off-peak
+    rng = _seeded_random("pricing", str(target_date))
+    is_weekend = target_date.weekday() >= 5
 
-    return 
+    hourly_rates = []
+    tier_definitions = []
+
+    if is_weekend:
+        tier_definitions = [
+            ("off_peak", range(0, 8), 0.115, 0.0, 280),
+            ("mid_peak", range(8, 20), 0.165, 0.02, 320),
+            ("off_peak", range(20, 24), 0.115, 0.0, 280),
+        ]
+    else:
+        tier_definitions = [
+            ("off_peak", range(0, 6), 0.11, 0.0, 270),
+            ("shoulder", range(6, 10), 0.16, 0.01, 310),
+            ("mid_peak", range(10, 17), 0.19, 0.03, 340),
+            ("peak", range(17, 21), 0.29, 0.06, 400),
+            ("shoulder", range(21, 23), 0.16, 0.01, 300),
+            ("off_peak", range(23, 24), 0.11, 0.0, 270),
+        ]
+
+    tier_lookup = {}
+    for period, hours_range, rate, demand_charge, carbon in tier_definitions:
+        for hour in hours_range:
+            tier_lookup[hour] = (period, rate, demand_charge, carbon)
+
+    for hour in range(24):
+        period, base_rate, demand_charge, carbon = tier_lookup.get(
+            hour, ("off_peak", 0.12, 0.0, 280)
+        )
+
+        variability = rng.uniform(-0.01, 0.015)
+        temperature_factor = 0.0
+        if period == "peak":
+            temperature_factor = rng.uniform(0.0, 0.02)
+        elif period == "mid_peak":
+            temperature_factor = rng.uniform(-0.005, 0.01)
+
+        final_rate = max(0.08, base_rate + variability + temperature_factor)
+
+        carbon_adjustment = rng.uniform(-15, 20)
+        carbon_intensity = int(max(150, carbon + carbon_adjustment))
+
+        hourly_rates.append({
+            "hour": hour,
+            "period": period,
+            "rate_usd_per_kwh": round(final_rate, 3),
+            "demand_charge_usd_per_kwh": round(demand_charge, 3),
+            "estimated_carbon_intensity_g_per_kwh": carbon_intensity,
+        })
+
+    average_rate = round(sum(item["rate_usd_per_kwh"] for item in hourly_rates) / 24, 3)
+    peak_rate = max(hourly_rates, key=lambda item: item["rate_usd_per_kwh"])
+
+    return {
+        "date": target_date.isoformat(),
+        "pricing_type": "time_of_use",
+        "currency": "USD",
+        "unit": "per_kWh",
+        "average_rate_usd": average_rate,
+        "peak_rate_usd": peak_rate["rate_usd_per_kwh"],
+        "peak_period_hour": peak_rate["hour"],
+        "hourly_rates": hourly_rates,
+    }
 
 @tool
 def query_energy_usage(start_date: str, end_date: str, device_type: str = None) -> Dict[str, Any]:
