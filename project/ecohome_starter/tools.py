@@ -5,13 +5,43 @@ import os
 import json
 import random
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Dict, Any
 from langchain_core.tools import tool
 from langchain_chroma import Chroma
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.document_loaders import TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from models.energy import DatabaseManager
+try:  # Support running as module or script
+    from .models.energy import DatabaseManager  # type: ignore
+except ImportError:  # pragma: no cover
+    from models.energy import DatabaseManager
+
+PACKAGE_ROOT = Path(__file__).resolve().parent
+PERSIST_DIR = PACKAGE_ROOT / "data" / "vectorstore"
+DOCUMENT_DIR = PACKAGE_ROOT / "data" / "documents"
+
+
+def _embedding_kwargs() -> Dict[str, str]:
+    """Build embedding client settings from environment variables."""
+    api_key = os.getenv("OPENAI_API_KEY") or os.getenv("VOCAREUM_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "Missing OpenAI credentials. Set OPENAI_API_KEY or VOCAREUM_API_KEY."
+        )
+
+    base_url = (
+        os.getenv("OPENAI_API_BASE")
+        or os.getenv("OPENAI_BASE_URL")
+        or os.getenv("OPENAI_API_HOST")
+    )
+    if not base_url and os.getenv("VOCAREUM_API_KEY"):
+        base_url = "https://openai.vocareum.com/v1"
+
+    kwargs = {"openai_api_key": api_key}
+    if base_url:
+        kwargs["openai_api_base"] = base_url
+    return kwargs
 
 # Initialize database manager
 db_manager = DatabaseManager()
@@ -240,37 +270,37 @@ def search_energy_tips(query: str, max_results: int = 5) -> Dict[str, Any]:
         Dict[str, Any]: Relevant energy tips and best practices
     """
     try:
-        # Initialize vector store if it doesn't exist
-        persist_directory = "data/vectorstore"
-        if not os.path.exists(persist_directory):
-            os.makedirs(persist_directory)
+        persist_directory = PERSIST_DIR
+        persist_directory.mkdir(parents=True, exist_ok=True)
         
-        # Load documents if vector store doesn't exist
-        if not os.path.exists(os.path.join(persist_directory, "chroma.sqlite3")):
-            # Load documents
+        chroma_path = persist_directory / "chroma.sqlite3"
+        embeddings = OpenAIEmbeddings(**_embedding_kwargs())
+        
+        if not chroma_path.exists():
             documents = []
-            for doc_path in ["data/documents/tip_device_best_practices.txt", "data/documents/tip_energy_savings.txt"]:
-                if os.path.exists(doc_path):
-                    loader = TextLoader(doc_path)
-                    docs = loader.load()
-                    documents.extend(docs)
+            for doc_name in [
+                "tip_device_best_practices.txt",
+                "tip_energy_savings.txt",
+                "tip_solar_optimization.txt",
+            ]:
+                doc_path = DOCUMENT_DIR / doc_name
+                if doc_path.exists():
+                    loader = TextLoader(str(doc_path))
+                    documents.extend(loader.load())
             
-            # Split documents
+            if not documents:
+                raise RuntimeError("No documents available to build the vector store.")
+            
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
             splits = text_splitter.split_documents(documents)
-            
-            # Create vector store
-            embeddings = OpenAIEmbeddings()
             vectorstore = Chroma.from_documents(
                 documents=splits,
                 embedding=embeddings,
-                persist_directory=persist_directory
+                persist_directory=str(persist_directory)
             )
         else:
-            # Load existing vector store
-            embeddings = OpenAIEmbeddings()
             vectorstore = Chroma(
-                persist_directory=persist_directory,
+                persist_directory=str(persist_directory),
                 embedding_function=embeddings
             )
         

@@ -1,2 +1,5 @@
 *.pyc
 __pycache__/
+project/ecohome_starter/data/vectorstore/
+.env
+project/.env

@@ -1,0 +1,13 @@
+Maximize your rooftop solar system by tuning its performance throughout the year. Begin with a biannual panel cleaning routine; dust and pollen can reduce output by 10% or more, especially during spring bloom and late-summer dry spells. Schedule cleaning for early morning to avoid rapid temperature swings that can stress the glass.
+
+Track production every week using your inverter portal or a home energy monitoring app. Flag days where generation drops more than 15% below the rolling average and investigate shading or inverter faults immediately. For tree shading, consult an arborist about selective trimming that keeps the canopy healthy while restoring midday sun.
+
+Shift large appliance loads—such as laundry, dishwashers, or pool pumps—to overlap with peak solar hours between 10 a.m. and 3 p.m. This increases self-consumption and reduces the amount of power exported at low feed-in tariffs. Pair the schedule with smart plugs or the appliance’s built-in delay-start mode.
+
+If you own a battery, reserve at least 20% capacity for evening use to cover the sunset-to-bedtime peak. Configure time-of-use automation so the battery charges from solar first and only from the grid during super-off-peak windows. Adjust these rules seasonally as daylight length changes.
+
+Inspect mounting hardware annually. Tighten lag bolts to the manufacturer torque spec and confirm flashing remains watertight. Look for signs of corrosion on rails in coastal climates; apply an appropriate anti-corrosion spray or replace hardware as needed.
+
+For systems with microinverters or DC optimizers, update firmware when the vendor releases improvements. Many updates refine maximum power point tracking, unlocking additional output during low-irradiance mornings and hazy afternoons.
+
+Work with your utility to enroll in solar-friendly rates. Plans that feature a midday credit or reduced daytime charge help solar households benefit from their generation. Review annual statements to ensure net-metering credits align with what your monitoring software reports, and dispute discrepancies promptly.
