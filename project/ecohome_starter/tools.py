@@ -6,23 +6,23 @@ import math
 import os
 import random
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from langchain_chroma import Chroma
 from langchain_core.tools import tool
 from langchain_openai import OpenAIEmbeddings
-from langchain_community.document_loaders import TextLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 try:  # Support running as module or script
     from .models.energy import DatabaseManager  # type: ignore
 except ImportError:  # pragma: no cover
     from models.energy import DatabaseManager
 
-PACKAGE_ROOT = Path(__file__).resolve().parent
-PERSIST_DIR = PACKAGE_ROOT / "data" / "vectorstore"
-DOCUMENT_DIR = PACKAGE_ROOT / "data" / "documents"
+try:
+    from .rag_setup import build_vector_store, VECTOR_DIR  # type: ignore
+except ImportError:  # pragma: no cover
+    from rag_setup import build_vector_store, VECTOR_DIR
+
+PERSIST_DIR = VECTOR_DIR
 
 
 def _embedding_kwargs() -> Dict[str, str]:
@@ -64,6 +64,26 @@ def _seasonal_temperature(base_date: datetime) -> float:
 
 # Initialize database manager
 db_manager = DatabaseManager()
+_VECTORSTORE_CACHE: Optional[Chroma] = None
+
+
+def _get_vectorstore(force_refresh: bool = False) -> Chroma:
+    """Return a Chroma vector store, building it if necessary."""
+    global _VECTORSTORE_CACHE
+    persist_directory = PERSIST_DIR
+    embeddings = OpenAIEmbeddings(**_embedding_kwargs())
+
+    chroma_path = persist_directory / "chroma.sqlite3"
+    if force_refresh or not chroma_path.exists():
+        build_vector_store(force=True)
+        _VECTORSTORE_CACHE = None
+
+    if _VECTORSTORE_CACHE is None:
+        _VECTORSTORE_CACHE = Chroma(
+            persist_directory=str(persist_directory),
+            embedding_function=embeddings,
+        )
+    return _VECTORSTORE_CACHE
 
 @tool
 def get_weather_forecast(location: str, days: int = 3) -> Dict[str, Any]:
@@ -464,42 +484,17 @@ def search_energy_tips(query: str, max_results: int = 5) -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: Relevant energy tips and best practices
     """
+    if not query or not isinstance(query, str):
+        return {"error": "Query must be a non-empty string."}
+
     try:
-        persist_directory = PERSIST_DIR
-        persist_directory.mkdir(parents=True, exist_ok=True)
-        
-        chroma_path = persist_directory / "chroma.sqlite3"
-        embeddings = OpenAIEmbeddings(**_embedding_kwargs())
-        
-        if not chroma_path.exists():
-            documents = []
-            for doc_name in [
-                "tip_device_best_practices.txt",
-                "tip_energy_savings.txt",
-                "tip_solar_optimization.txt",
-            ]:
-                doc_path = DOCUMENT_DIR / doc_name
-                if doc_path.exists():
-                    loader = TextLoader(str(doc_path))
-                    documents.extend(loader.load())
-            
-            if not documents:
-                raise RuntimeError("No documents available to build the vector store.")
-            
-            text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-            splits = text_splitter.split_documents(documents)
-            vectorstore = Chroma.from_documents(
-                documents=splits,
-                embedding=embeddings,
-                persist_directory=str(persist_directory)
-            )
-        else:
-            vectorstore = Chroma(
-                persist_directory=str(persist_directory),
-                embedding_function=embeddings
-            )
-        
-        # Search for relevant documents
+        max_results = int(max_results)
+    except (TypeError, ValueError):
+        max_results = 5
+    max_results = max(1, min(max_results, 10))
+
+    try:
+        vectorstore = _get_vectorstore()
         docs = vectorstore.similarity_search(query, k=max_results)
         
         results = {

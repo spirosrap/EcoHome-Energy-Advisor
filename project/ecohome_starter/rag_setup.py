@@ -6,12 +6,6 @@ import os
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-try:  # Allow imports whether run as package or script
-    from .tools import search_energy_tips  # noqa: F401  # Ensures dependencies installed
-    from .models import energy  # noqa: F401
-except ImportError:  # pragma: no cover
-    pass
-
 from langchain_chroma import Chroma
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.document_loaders import TextLoader
